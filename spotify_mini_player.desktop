@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=Spotify Mini Player
+Comment=Красивый мини-плеер для Spotify с японской эстетикой
+Exec=python3 ./spotify_mini_player.py
+Icon=spotify
+Terminal=false
+Type=Application
+Categories=Audio;Music;Player;
+StartupNotify=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5
+
+# Для автозапуска скопируйте в:
+# ~/.config/autostart/spotify-mini-player.desktop

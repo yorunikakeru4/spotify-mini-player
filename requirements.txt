@@ -1,0 +1,13 @@
+# Основные зависимости для Spotify Mini Player
+pydbus>=0.6.0
+PyGObject>=3.42.0
+pycairo>=1.20.0
+Pillow>=9.0.0
+
+# Дополнительные библиотеки
+dbus-python>=1.2.0
+requests>=2.25.0
+
+# Для разработки (опционально)
+black>=22.0.0
+flake8>=4.0.0
