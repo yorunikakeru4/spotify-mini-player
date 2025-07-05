@@ -2,6 +2,7 @@
 """
 Spotify Mini Player с эквалайзером для GNOME 46 Wayland
 Тема: Деревяно-розовая японская эстетика
+Добавлены: регулятор громкости и прозрачности
 """
 
 import gi
@@ -137,11 +138,16 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         
         # Настройка окна
         self.set_title("🌸 Spotify Mini")
-        self.set_default_size(340, 200)
+        self.set_default_size(340, 280)  # Увеличили высоту для новых элементов
         self.set_resizable(False)
         
         # Всегда поверх других окон
-        self.set_decorated(True)  # Оставляем рамку для красоты
+        self.set_decorated(True)
+        self.set_opacity(0.8)
+        
+        # Переменные для управления
+        self.current_volume = 0.5
+        self.current_opacity = 0.8
         
         # MPRIS подключение
         self.mpris = None
@@ -196,7 +202,7 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         self.track_title = Gtk.Label(label="♪ Waiting for music...")
         self.track_title.set_css_classes(["track-title"])
         self.track_title.set_halign(Gtk.Align.START)
-        self.track_title.set_ellipsize(3)  # Обрезка текста
+        self.track_title.set_ellipsize(3)
         track_info_box.append(self.track_title)
         
         self.track_artist = Gtk.Label(label="Connect your player ♫")
@@ -242,6 +248,50 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         controls_box.append(next_button)
         
         main_box.append(controls_box)
+        
+        # Регулятор громкости
+        volume_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        volume_box.set_halign(Gtk.Align.CENTER)
+        
+        volume_label = Gtk.Label(label="🔊")
+        volume_label.set_css_classes(["volume-label"])
+        volume_box.append(volume_label)
+        
+        self.volume_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
+        self.volume_scale.set_range(0.0, 1.0)
+        self.volume_scale.set_value(self.current_volume)
+        self.volume_scale.set_size_request(120, -1)
+        self.volume_scale.set_css_classes(["volume-scale"])
+        self.volume_scale.connect("value-changed", self.on_volume_changed)
+        volume_box.append(self.volume_scale)
+        
+        self.volume_percent_label = Gtk.Label(label="50%")
+        self.volume_percent_label.set_css_classes(["volume-percent"])
+        volume_box.append(self.volume_percent_label)
+        
+        main_box.append(volume_box)
+        
+        # Регулятор прозрачности
+        opacity_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        opacity_box.set_halign(Gtk.Align.CENTER)
+        
+        opacity_label = Gtk.Label(label="✨")
+        opacity_label.set_css_classes(["opacity-label"])
+        opacity_box.append(opacity_label)
+        
+        self.opacity_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
+        self.opacity_scale.set_range(0.7, 1.0)
+        self.opacity_scale.set_value(self.current_opacity)
+        self.opacity_scale.set_size_request(120, -1)
+        self.opacity_scale.set_css_classes(["opacity-scale"])
+        self.opacity_scale.connect("value-changed", self.on_opacity_changed)
+        opacity_box.append(self.opacity_scale)
+        
+        self.opacity_percent_label = Gtk.Label(label="80%")
+        self.opacity_percent_label.set_css_classes(["opacity-percent"])
+        opacity_box.append(self.opacity_percent_label)
+        
+        main_box.append(opacity_box)
         
         self.set_child(main_box)
     
@@ -345,6 +395,48 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         .nav-button:hover {
             background: linear-gradient(135deg, #8b4513, #a0522d);
         }
+        
+        .volume-scale, .opacity-scale {
+            background: linear-gradient(135deg, #4a2c1a, #6b3e2a);
+            border: 2px solid #8b4513;
+            border-radius: 12px;
+            padding: 2px;
+        }
+        
+        .volume-scale slider, .opacity-scale slider {
+            background: linear-gradient(135deg, #ff9999, #ff6b6b);
+            border: 2px solid #ff4757;
+            border-radius: 50%;
+            min-width: 16px;
+            min-height: 16px;
+            box-shadow: 0 2px 6px rgba(255, 107, 107, 0.5);
+        }
+        
+        .volume-scale slider:hover, .opacity-scale slider:hover {
+            background: linear-gradient(135deg, #ffb3b3, #ff9999);
+            box-shadow: 0 4px 10px rgba(255, 107, 107, 0.7);
+        }
+        
+        .volume-scale trough, .opacity-scale trough {
+            background: linear-gradient(135deg, #2d1810, #4a2c1a);
+            border-radius: 6px;
+            border: 1px solid #654321;
+            min-height: 8px;
+        }
+        
+        .volume-label, .opacity-label {
+            color: #ffd4a3;
+            font-size: 14px;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+        }
+        
+        .volume-percent, .opacity-percent {
+            color: #d4a574;
+            font-size: 10px;
+            font-weight: bold;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+            min-width: 25px;
+        }
         """
         
         css_provider = Gtk.CssProvider()
@@ -354,6 +446,28 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         Gtk.StyleContext.add_provider_for_display(
             display, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
+    
+    def on_volume_changed(self, scale):
+        """Обработка изменения громкости"""
+        self.current_volume = scale.get_value()
+        volume_percent = int(self.current_volume * 100)
+        self.volume_percent_label.set_text(f"{volume_percent}%")
+        
+        # Установка громкости через MPRIS
+        if self.mpris:
+            try:
+                self.mpris.SetVolume(self.current_volume)
+            except Exception as e:
+                print(f"Ошибка установки громкости: {e}")
+    
+    def on_opacity_changed(self, scale):
+        """Обработка изменения прозрачности"""
+        self.current_opacity = scale.get_value()
+        opacity_percent = int(self.current_opacity * 100)
+        self.opacity_percent_label.set_text(f"{opacity_percent}%")
+        
+        # Установка прозрачности окна
+        self.set_opacity(self.current_opacity)
     
     def update_track_info(self):
         """Обновление информации о треке"""
@@ -384,6 +498,17 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
                 self.status_label.set_text("◉ Paused")
             
             self.equalizer.set_playing(self.is_playing)
+            
+            # Обновление громкости из плеера
+            try:
+                current_volume = self.mpris.Volume
+                if abs(current_volume - self.current_volume) > 0.01:
+                    self.current_volume = current_volume
+                    self.volume_scale.set_value(self.current_volume)
+                    volume_percent = int(self.current_volume * 100)
+                    self.volume_percent_label.set_text(f"{volume_percent}%")
+            except Exception:
+                pass  # Не все плееры поддерживают Volume
             
             # Загрузка обложки альбома
             if 'mpris:artUrl' in metadata:
