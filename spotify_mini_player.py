@@ -456,7 +456,7 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         # Установка громкости через MPRIS
         if self.mpris:
             try:
-                self.mpris.SetVolume(self.current_volume)
+                self.mpris.Volume = self.current_volume
             except Exception as e:
                 print(f"Ошибка установки громкости: {e}")
     
