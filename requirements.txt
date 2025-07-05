@@ -1,13 +1,15 @@
-# Основные зависимости для Spotify Mini Player
+# Для всех платформ
+PyGObject>=3.40
+cairocffi>=1.3.0
+
+# Для Linux (MPRIS)
 pydbus>=0.6.0
-PyGObject>=3.42.0
-pycairo>=1.20.0
-Pillow>=9.0.0
 
-# Дополнительные библиотеки
-dbus-python>=1.2.0
+# Для Windows (winrt и winsdk для Windows Media API; pywin32 как COM-резерв)
+# Следующие строки можно оставить в requirements.txt, pip на других ОС просто их пропустит
+winrt; platform_system == "Windows"
+winsdk; platform_system == "Windows"
+pywin32; platform_system == "Windows"
+
+# Универсальные зависимости
 requests>=2.25.0
-
-# Для разработки (опционально)
-black>=22.0.0
-flake8>=4.0.0

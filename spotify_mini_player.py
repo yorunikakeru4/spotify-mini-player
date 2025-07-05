@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Spotify Mini Player с эквалайзером для GNOME 46 Wayland
+Spotify Mini Player с эквалайзером для Linux и Windows
 Тема: Деревяно-розовая японская эстетика
-Добавлены: регулятор громкости и прозрачности
+Универсальная версия с поддержкой MPRIS (Linux) и Windows Media API
 """
 
 import gi
@@ -16,18 +16,394 @@ import math
 import random
 import threading
 import time
-from pathlib import Path
+import platform
+import subprocess
 import json
 import urllib.request
 import urllib.parse
+from pathlib import Path
 from io import BytesIO
 
-try:
-    import pydbus
-    MPRIS_AVAILABLE = True
-except ImportError:
+# Определение операционной системы
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
+
+# Импорты для Linux (MPRIS)
+if IS_LINUX:
+    try:
+        import pydbus
+        MPRIS_AVAILABLE = True
+    except ImportError:
+        MPRIS_AVAILABLE = False
+        print("⚠️  pydbus не найден, установите: pip install pydbus")
+else:
     MPRIS_AVAILABLE = False
-    print("⚠️  pydbus не найден, MPRIS отключен")
+
+# Импорты для Windows
+if IS_WINDOWS:
+    try:
+        import winsdk.windows.media.control as wmc
+        import winsdk.windows.storage.streams as wss
+        import asyncio
+        import winrt.windows.media.control as wmc_winrt
+        WINDOWS_MEDIA_AVAILABLE = True
+    except ImportError:
+        try:
+            # Альтернативный способ через COM
+            import win32com.client
+            WINDOWS_COM_AVAILABLE = True
+            WINDOWS_MEDIA_AVAILABLE = False
+        except ImportError:
+            print("⚠️  Для Windows установите: pip install winrt winsdkfb")
+            print("⚠️  Или альтернативно: pip install pywin32")
+            WINDOWS_MEDIA_AVAILABLE = False
+            WINDOWS_COM_AVAILABLE = False
+else:
+    WINDOWS_MEDIA_AVAILABLE = False
+    WINDOWS_COM_AVAILABLE = False
+
+class MediaController:
+    """Универсальный контроллер медиа для Linux и Windows"""
+    
+    def __init__(self):
+        self.is_playing = False
+        self.current_track = {}
+        self.volume = 0.5
+        
+        if IS_LINUX and MPRIS_AVAILABLE:
+            self.controller = LinuxMPRISController()
+        elif IS_WINDOWS and WINDOWS_MEDIA_AVAILABLE:
+            self.controller = WindowsMediaController()
+        elif IS_WINDOWS and WINDOWS_COM_AVAILABLE:
+            self.controller = WindowsCOMController()
+        else:
+            self.controller = DummyController()
+    
+    def get_track_info(self):
+        return self.controller.get_track_info()
+    
+    def play_pause(self):
+        self.controller.play_pause()
+    
+    def next_track(self):
+        self.controller.next_track()
+    
+    def previous_track(self):
+        self.controller.previous_track()
+    
+    def set_volume(self, volume):
+        self.controller.set_volume(volume)
+    
+    def get_volume(self):
+        return self.controller.get_volume()
+
+class LinuxMPRISController:
+    """Контроллер для Linux через MPRIS"""
+    
+    def __init__(self):
+        self.mpris = None
+        self.connect_to_spotify()
+    
+    def connect_to_spotify(self):
+        try:
+            bus = pydbus.SessionBus()
+            self.mpris = bus.get("org.mpris.MediaPlayer2.spotify", "/org/mpris/MediaPlayer2")
+            print("✅ Подключён к Spotify через MPRIS")
+        except Exception as e:
+            print(f"❌ Не удалось подключиться к Spotify: {e}")
+            self.mpris = None
+    
+    def get_track_info(self):
+        if not self.mpris:
+            return {
+                'title': 'Waiting for music...',
+                'artist': 'Connect your player ♫',
+                'status': 'Not connected',
+                'is_playing': False,
+                'album_art': None
+            }
+        
+        try:
+            metadata = self.mpris.Metadata
+            playback_status = self.mpris.PlaybackStatus
+            
+            return {
+                'title': metadata.get('xesam:title', 'Unknown'),
+                'artist': metadata.get('xesam:artist', ['Unknown'])[0] if metadata.get('xesam:artist') else 'Unknown',
+                'status': 'Playing' if playback_status == "Playing" else 'Paused',
+                'is_playing': playback_status == "Playing",
+                'album_art': metadata.get('mpris:artUrl', None)
+            }
+        except Exception as e:
+            print(f"Ошибка получения данных MPRIS: {e}")
+            return {
+                'title': 'Error',
+                'artist': 'Connection lost',
+                'status': 'Error',
+                'is_playing': False,
+                'album_art': None
+            }
+    
+    def play_pause(self):
+        if self.mpris:
+            try:
+                self.mpris.PlayPause()
+            except Exception as e:
+                print(f"Ошибка play/pause: {e}")
+    
+    def next_track(self):
+        if self.mpris:
+            try:
+                self.mpris.Next()
+            except Exception as e:
+                print(f"Ошибка next: {e}")
+    
+    def previous_track(self):
+        if self.mpris:
+            try:
+                self.mpris.Previous()
+            except Exception as e:
+                print(f"Ошибка previous: {e}")
+    
+    def set_volume(self, volume):
+        if self.mpris:
+            try:
+                self.mpris.Volume = volume
+            except Exception as e:
+                print(f"Ошибка установки громкости: {e}")
+    
+    def get_volume(self):
+        if self.mpris:
+            try:
+                return self.mpris.Volume
+            except Exception:
+                return 0.5
+        return 0.5
+
+class WindowsMediaController:
+    """Контроллер для Windows через Windows Media API"""
+    
+    def __init__(self):
+        self.session_manager = None
+        self.current_session = None
+        self.setup_windows_media()
+    
+    def setup_windows_media(self):
+        try:
+            # Создание event loop для async операций
+            if not hasattr(self, 'loop'):
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+            
+            # Получение менеджера сессий
+            self.session_manager = wmc_winrt.GlobalSystemMediaTransportControlsSessionManager.request_async().get()
+            self.find_spotify_session()
+            print("✅ Подключён к Windows Media API")
+        except Exception as e:
+            print(f"❌ Ошибка инициализации Windows Media: {e}")
+    
+    def find_spotify_session(self):
+        try:
+            sessions = self.session_manager.get_sessions()
+            for session in sessions:
+                if "spotify" in session.source_app_user_model_id.lower():
+                    self.current_session = session
+                    return
+        except Exception as e:
+            print(f"Ошибка поиска Spotify сессии: {e}")
+    
+    def get_track_info(self):
+        if not self.current_session:
+            self.find_spotify_session()
+        
+        if not self.current_session:
+            return {
+                'title': 'Waiting for music...',
+                'artist': 'Connect your player ♫',
+                'status': 'Not connected',
+                'is_playing': False,
+                'album_art': None
+            }
+        
+        try:
+            media_info = self.current_session.try_get_media_properties_async().get()
+            playback_info = self.current_session.get_playback_info()
+            
+            return {
+                'title': media_info.title or 'Unknown',
+                'artist': media_info.artist or 'Unknown',
+                'status': 'Playing' if playback_info.playback_status == 4 else 'Paused',
+                'is_playing': playback_info.playback_status == 4,
+                'album_art': None  # Требует дополнительной обработки
+            }
+        except Exception as e:
+            print(f"Ошибка получения данных Windows Media: {e}")
+            return {
+                'title': 'Error',
+                'artist': 'Connection lost',
+                'status': 'Error',
+                'is_playing': False,
+                'album_art': None
+            }
+    
+    def play_pause(self):
+        if self.current_session:
+            try:
+                self.current_session.try_play_pause_async()
+            except Exception as e:
+                print(f"Ошибка play/pause: {e}")
+    
+    def next_track(self):
+        if self.current_session:
+            try:
+                self.current_session.try_skip_next_async()
+            except Exception as e:
+                print(f"Ошибка next: {e}")
+    
+    def previous_track(self):
+        if self.current_session:
+            try:
+                self.current_session.try_skip_previous_async()
+            except Exception as e:
+                print(f"Ошибка previous: {e}")
+    
+    def set_volume(self, volume):
+        # Windows Media API не поддерживает установку громкости
+        pass
+    
+    def get_volume(self):
+        return 0.5
+
+class WindowsCOMController:
+    """Альтернативный контроллер для Windows через COM"""
+    
+    def __init__(self):
+        self.spotify_process = None
+        self.find_spotify_process()
+    
+    def find_spotify_process(self):
+        try:
+            # Поиск процесса Spotify
+            result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Spotify.exe'], 
+                                  capture_output=True, text=True)
+            if 'Spotify.exe' in result.stdout:
+                print("✅ Найден процесс Spotify")
+                return True
+        except Exception as e:
+            print(f"Ошибка поиска Spotify: {e}")
+        return False
+    
+    def get_track_info(self):
+        if not self.find_spotify_process():
+            return {
+                'title': 'Waiting for music...',
+                'artist': 'Connect your player ♫',
+                'status': 'Not connected',
+                'is_playing': False,
+                'album_art': None
+            }
+        
+        # Упрощённая версия - получение информации через заголовок окна
+        try:
+            result = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Spotify.exe', '/V'], 
+                                  capture_output=True, text=True)
+            
+            # Парсинг заголовка окна Spotify
+            lines = result.stdout.split('\n')
+            for line in lines:
+                if 'Spotify.exe' in line and ' - ' in line:
+                    # Извлечение информации о треке из заголовка
+                    parts = line.split(' - ')
+                    if len(parts) >= 2:
+                        title_part = parts[-1].strip()
+                        artist_part = parts[-2].strip()
+                        
+                        return {
+                            'title': title_part,
+                            'artist': artist_part,
+                            'status': 'Playing',
+                            'is_playing': True,
+                            'album_art': None
+                        }
+        except Exception as e:
+            print(f"Ошибка получения данных COM: {e}")
+        
+        return {
+            'title': 'Unknown',
+            'artist': 'Unknown',
+            'status': 'Unknown',
+            'is_playing': False,
+            'album_art': None
+        }
+    
+    def play_pause(self):
+        self.send_media_key('play_pause')
+    
+    def next_track(self):
+        self.send_media_key('next_track')
+    
+    def previous_track(self):
+        self.send_media_key('previous_track')
+    
+    def send_media_key(self, key):
+        try:
+            # Отправка медиа-клавиш через VK коды
+            import ctypes
+            from ctypes import wintypes
+            
+            user32 = ctypes.windll.user32
+            
+            # VK коды для медиа-клавиш
+            VK_MEDIA_PLAY_PAUSE = 0xB3
+            VK_MEDIA_NEXT_TRACK = 0xB0
+            VK_MEDIA_PREV_TRACK = 0xB1
+            
+            key_map = {
+                'play_pause': VK_MEDIA_PLAY_PAUSE,
+                'next_track': VK_MEDIA_NEXT_TRACK,
+                'previous_track': VK_MEDIA_PREV_TRACK
+            }
+            
+            if key in key_map:
+                vk_code = key_map[key]
+                user32.keybd_event(vk_code, 0, 0, 0)
+                user32.keybd_event(vk_code, 0, 2, 0)
+        except Exception as e:
+            print(f"Ошибка отправки медиа-клавиши: {e}")
+    
+    def set_volume(self, volume):
+        # COM контроллер не поддерживает установку громкости
+        pass
+    
+    def get_volume(self):
+        return 0.5
+
+class DummyController:
+    """Заглушка для случаев, когда нет доступных контроллеров"""
+    
+    def get_track_info(self):
+        return {
+            'title': 'Media API не доступен',
+            'artist': 'Установите необходимые зависимости',
+            'status': 'Offline',
+            'is_playing': False,
+            'album_art': None
+        }
+    
+    def play_pause(self):
+        print("⚠️  Управление недоступно")
+    
+    def next_track(self):
+        print("⚠️  Управление недоступно")
+    
+    def previous_track(self):
+        print("⚠️  Управление недоступно")
+    
+    def set_volume(self, volume):
+        pass
+    
+    def get_volume(self):
+        return 0.5
 
 class EqualizerWidget(Gtk.DrawingArea):
     """Анимированный эквалайзер в японском стиле"""
@@ -137,8 +513,8 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         super().__init__(application=app)
         
         # Настройка окна
-        self.set_title("🌸 Spotify Mini")
-        self.set_default_size(340, 280)  # Увеличили высоту для новых элементов
+        self.set_title(f"🌸 Spotify Mini - {platform.system()}")
+        self.set_default_size(340, 280)
         self.set_resizable(False)
         
         # Всегда поверх других окон
@@ -149,11 +525,8 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         self.current_volume = 0.5
         self.current_opacity = 0.8
         
-        # MPRIS подключение
-        self.mpris = None
-        self.current_track = {}
-        self.is_playing = False
-        self.connect_to_spotify()
+        # Универсальный медиа-контроллер
+        self.media_controller = MediaController()
         
         # Создание интерфейса
         self.create_ui()
@@ -163,19 +536,22 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         
         # Обновление данных
         GLib.timeout_add(1000, self.update_track_info)
-    
-    def connect_to_spotify(self):
-        """Подключение к Spotify через MPRIS"""
-        if not MPRIS_AVAILABLE:
-            return
         
-        try:
-            bus = pydbus.SessionBus()
-            self.mpris = bus.get("org.mpris.MediaPlayer2.spotify", "/org/mpris/MediaPlayer2")
-            print("✅ Подключён к Spotify")
-        except Exception as e:
-            print(f"❌ Не удалось подключиться к Spotify: {e}")
-            self.mpris = None
+        # Добавление информации о системе в статус
+        self.show_system_info()
+    
+    def show_system_info(self):
+        """Показать информацию о системе в консоли"""
+        print(f"🖥️  Система: {platform.system()} {platform.release()}")
+        if IS_LINUX:
+            print("🐧 Используется MPRIS для управления")
+        elif IS_WINDOWS:
+            if WINDOWS_MEDIA_AVAILABLE:
+                print("🪟 Используется Windows Media API")
+            elif WINDOWS_COM_AVAILABLE:
+                print("🪟 Используется COM + медиа-клавиши")
+            else:
+                print("🪟 Медиа API недоступен")
     
     def create_ui(self):
         """Создание пользовательского интерфейса"""
@@ -189,7 +565,7 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         # Информация о треке с обложкой
         track_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         
-        # Обложка альбома с анимешным дизайном
+        # Обложка альбома
         self.album_cover = Gtk.Image()
         self.album_cover.set_size_request(60, 60)
         self.album_cover.set_css_classes(["album-cover"])
@@ -211,8 +587,9 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         self.track_artist.set_ellipsize(3)
         track_info_box.append(self.track_artist)
         
-        # Статус воспроизведения с анимешными эмодзи
-        self.status_label = Gtk.Label(label="◉ Ready")
+        # Статус воспроизведения + система
+        system_icon = "🐧" if IS_LINUX else "🪟"
+        self.status_label = Gtk.Label(label=f"{system_icon} Ready")
         self.status_label.set_css_classes(["status-label"])
         self.status_label.set_halign(Gtk.Align.START)
         track_info_box.append(self.status_label)
@@ -225,7 +602,7 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         self.equalizer.set_css_classes(["equalizer"])
         main_box.append(self.equalizer)
         
-        # Кнопки управления в анимешном стиле
+        # Кнопки управления
         controls_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         controls_box.set_halign(Gtk.Align.CENTER)
         
@@ -235,7 +612,7 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         prev_button.connect("clicked", self.on_previous_clicked)
         controls_box.append(prev_button)
         
-        # Кнопка "Воспроизведение/Пауза" - главная кнопка
+        # Кнопка "Воспроизведение/Пауза"
         self.play_button = Gtk.Button(label="▶")
         self.play_button.set_css_classes(["control-button", "play-button"])
         self.play_button.connect("clicked", self.on_play_clicked)
@@ -296,7 +673,7 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         self.set_child(main_box)
     
     def apply_styles(self):
-        """Применение CSS стилей в анимешном стиле"""
+        """Применение CSS стилей"""
         css = """
         window {
             background: radial-gradient(circle at 30% 20%, #4a2c1a 0%, #2d1810 70%);
@@ -334,10 +711,10 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
             border: 3px solid #8b4513;
             border-radius: 12px;
             background: radial-gradient(circle, #6b3e2a, #4a2c1a);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3),
+                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3),
                         inset 0 2px 4px rgba(255, 153, 153, 0.2);
         }
-        
+
         .equalizer {
             border: 2px solid #8b4513;
             border-radius: 15px;
@@ -346,7 +723,7 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
             box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.4),
                         0 2px 6px rgba(255, 153, 153, 0.1);
         }
-        
+
         .control-button {
             background: linear-gradient(135deg, #8b4513, #a0522d);
             color: #ffd4a3;
@@ -359,20 +736,20 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
             box-shadow: 0 3px 8px rgba(0, 0, 0, 0.3),
                         inset 0 1px 2px rgba(255, 212, 163, 0.2);
         }
-        
+
         .control-button:hover {
             background: linear-gradient(135deg, #a0522d, #cd853f);
             transform: translateY(-1px) scale(1.05);
             box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4),
                         inset 0 2px 4px rgba(255, 212, 163, 0.3);
         }
-        
+
         .control-button:active {
             transform: translateY(0px) scale(0.95);
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4),
                         inset 0 2px 8px rgba(0, 0, 0, 0.3);
         }
-        
+
         .play-button {
             background: linear-gradient(135deg, #ff6b6b, #ff9999);
             color: #2d1810;
@@ -380,29 +757,29 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
             box-shadow: 0 4px 12px rgba(255, 107, 107, 0.4),
                         inset 0 2px 4px rgba(255, 255, 255, 0.3);
         }
-        
+
         .play-button:hover {
             background: linear-gradient(135deg, #ff9999, #ffb3b3);
             box-shadow: 0 8px 20px rgba(255, 107, 107, 0.6),
                         inset 0 2px 6px rgba(255, 255, 255, 0.4);
         }
-        
+
         .nav-button {
             background: linear-gradient(135deg, #6b3e2a, #8b4513);
             padding: 6px 10px;
         }
-        
+
         .nav-button:hover {
             background: linear-gradient(135deg, #8b4513, #a0522d);
         }
-        
+
         .volume-scale, .opacity-scale {
             background: linear-gradient(135deg, #4a2c1a, #6b3e2a);
             border: 2px solid #8b4513;
             border-radius: 12px;
             padding: 2px;
         }
-        
+
         .volume-scale slider, .opacity-scale slider {
             background: linear-gradient(135deg, #ff9999, #ff6b6b);
             border: 2px solid #ff4757;
@@ -411,25 +788,25 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
             min-height: 16px;
             box-shadow: 0 2px 6px rgba(255, 107, 107, 0.5);
         }
-        
+
         .volume-scale slider:hover, .opacity-scale slider:hover {
             background: linear-gradient(135deg, #ffb3b3, #ff9999);
             box-shadow: 0 4px 10px rgba(255, 107, 107, 0.7);
         }
-        
+
         .volume-scale trough, .opacity-scale trough {
             background: linear-gradient(135deg, #2d1810, #4a2c1a);
             border-radius: 6px;
             border: 1px solid #654321;
             min-height: 8px;
         }
-        
+
         .volume-label, .opacity-label {
             color: #ffd4a3;
             font-size: 14px;
             text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
         }
-        
+
         .volume-percent, .opacity-percent {
             color: #d4a574;
             font-size: 10px;
@@ -438,169 +815,79 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
             min-width: 25px;
         }
         """
-        
         css_provider = Gtk.CssProvider()
         css_provider.load_from_data(css.encode())
-        
         display = Gdk.Display.get_default()
         Gtk.StyleContext.add_provider_for_display(
             display, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
-    
+
     def on_volume_changed(self, scale):
-        """Обработка изменения громкости"""
         self.current_volume = scale.get_value()
         volume_percent = int(self.current_volume * 100)
         self.volume_percent_label.set_text(f"{volume_percent}%")
-        
-        # Установка громкости через MPRIS
-        if self.mpris:
-            try:
-                self.mpris.Volume = self.current_volume
-            except Exception as e:
-                print(f"Ошибка установки громкости: {e}")
-    
+        self.media_controller.set_volume(self.current_volume)
+
     def on_opacity_changed(self, scale):
-        """Обработка изменения прозрачности"""
         self.current_opacity = scale.get_value()
         opacity_percent = int(self.current_opacity * 100)
         self.opacity_percent_label.set_text(f"{opacity_percent}%")
-        
-        # Установка прозрачности окна
         self.set_opacity(self.current_opacity)
-    
+
     def update_track_info(self):
-        """Обновление информации о треке"""
-        if not self.mpris:
-            return True
-        
-        try:
-            # Получение метаданных
-            metadata = self.mpris.Metadata
-            playback_status = self.mpris.PlaybackStatus
-            
-            # Обновление информации о треке
-            if 'xesam:title' in metadata:
-                title = metadata['xesam:title']
-                self.track_title.set_text(f"♪ {title[:25]}..." if len(title) > 25 else f"♪ {title}")
-            
-            if 'xesam:artist' in metadata:
-                artist = metadata['xesam:artist'][0] if metadata['xesam:artist'] else "Unknown"
-                self.track_artist.set_text(f"by {artist[:20]}..." if len(artist) > 20 else f"by {artist}")
-            
-            # Обновление состояния воспроизведения с анимешными эмодзи
-            self.is_playing = playback_status == "Playing"
-            if self.is_playing:
-                self.play_button.set_label("⏸")
-                self.status_label.set_text("♫ Playing")
-            else:
-                self.play_button.set_label("▶")
-                self.status_label.set_text("◉ Paused")
-            
-            self.equalizer.set_playing(self.is_playing)
-            
-            # Обновление громкости из плеера
-            try:
-                current_volume = self.mpris.Volume
-                if abs(current_volume - self.current_volume) > 0.01:
-                    self.current_volume = current_volume
-                    self.volume_scale.set_value(self.current_volume)
-                    volume_percent = int(self.current_volume * 100)
-                    self.volume_percent_label.set_text(f"{volume_percent}%")
-            except Exception:
-                pass  # Не все плееры поддерживают Volume
-            
-            # Загрузка обложки альбома
-            if 'mpris:artUrl' in metadata:
-                self.load_album_cover(metadata['mpris:artUrl'])
-            
-        except Exception as e:
-            print(f"Ошибка обновления: {e}")
-            self.track_title.set_text("♪ Waiting for music...")
-            self.track_artist.set_text("Connect your player ♫")
-            self.status_label.set_text("◉ Not connected")
-            self.is_playing = False
-            self.equalizer.set_playing(False)
-        
+        info = self.media_controller.get_track_info()
+        self.track_title.set_text(f"♪ {info['title']}")
+        self.track_artist.set_text(f"by {info['artist']}")
+        self.status_label.set_text(f"{'🐧' if IS_LINUX else '🪟'} {info['status']}")
+        self.equalizer.set_playing(info['is_playing'])
+        # Загрузка обложки (если есть URL)
+        if info['album_art']:
+            self.load_album_cover(info['album_art'])
         return True
-    
+
     def load_album_cover(self, url):
-        """Загрузка обложки альбома"""
         def load_cover():
             try:
                 response = urllib.request.urlopen(url, timeout=5)
                 image_data = response.read()
-                
                 GLib.idle_add(self.set_album_cover, image_data)
             except Exception as e:
                 print(f"Ошибка загрузки обложки: {e}")
-        
         threading.Thread(target=load_cover, daemon=True).start()
-    
+
     def set_album_cover(self, image_data):
-        """Установка обложки альбома"""
         try:
             loader = GdkPixbuf.PixbufLoader()
             loader.write(image_data)
             loader.close()
-            
             pixbuf = loader.get_pixbuf()
             pixbuf = pixbuf.scale_simple(50, 50, GdkPixbuf.InterpType.BILINEAR)
-            
             self.album_cover.set_from_pixbuf(pixbuf)
         except Exception as e:
             print(f"Ошибка установки обложки: {e}")
-    
+
     def on_play_clicked(self, button):
-        """Обработка нажатия кнопки воспроизведения"""
-        if not self.mpris:
-            return
-        
-        try:
-            self.mpris.PlayPause()
-        except Exception as e:
-            print(f"Ошибка воспроизведения: {e}")
-    
+        self.media_controller.play_pause()
+
     def on_previous_clicked(self, button):
-        """Обработка нажатия кнопки "Предыдущий трек"""
-        if not self.mpris:
-            return
-        
-        try:
-            self.mpris.Previous()
-        except Exception as e:
-            print(f"Ошибка переключения: {e}")
-    
+        self.media_controller.previous_track()
+
     def on_next_clicked(self, button):
-        """Обработка нажатия кнопки "Следующий трек"""
-        if not self.mpris:
-            return
-        
-        try:
-            self.mpris.Next()
-        except Exception as e:
-            print(f"Ошибка переключения: {e}")
+        self.media_controller.next_track()
 
 class SpotifyMiniApp(Gtk.Application):
     """Главный класс приложения"""
-    
     def __init__(self):
         super().__init__(application_id="com.example.spotifymini")
         self.window = None
-    
+
     def do_activate(self):
         if not self.window:
             self.window = SpotifyMiniPlayer(self)
             self.window.present()
 
 def main():
-    """Главная функция"""
     print("🌸 Запуск Spotify Mini Player...")
-    
-    if not MPRIS_AVAILABLE:
-        print("⚠️  Для полной функциональности установите pydbus:")
-        print("    pip install pydbus")
-    
     app = SpotifyMiniApp()
     app.run()
 
