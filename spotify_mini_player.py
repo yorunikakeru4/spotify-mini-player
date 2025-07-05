@@ -2,27 +2,38 @@
 """
 Spotify Mini Player с эквалайзером для Linux и Windows
 Тема: Деревяно-розовая японская эстетика
-Универсальная версия с поддержкой MPRIS (Linux) и Windows Media API
+PySide версия для универсальной кроссплатформенности
 """
 
-import gi
-gi.require_version('Gtk', '4.0')
-gi.require_version('Gdk', '4.0')
-gi.require_version('GdkPixbuf', '2.0')
-
-from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Gio
-import cairo
-import math
-import random
-import threading
-import time
+import sys
+import os
 import platform
 import subprocess
 import json
 import urllib.request
 import urllib.parse
+import threading
+import time
+import random
+import math
 from pathlib import Path
 from io import BytesIO
+
+# PySide6 импорты
+try:
+    from PySide6.QtWidgets import *
+    from PySide6.QtCore import *
+    from PySide6.QtGui import *
+    PYSIDE_VERSION = 6
+except ImportError:
+    try:
+        from PySide2.QtWidgets import *
+        from PySide2.QtCore import *
+        from PySide2.QtGui import *
+        PYSIDE_VERSION = 2
+    except ImportError:
+        print("❌ PySide не найден! Установите: pip install PySide6")
+        sys.exit(1)
 
 # Определение операционной системы
 IS_WINDOWS = platform.system() == "Windows"
@@ -347,27 +358,28 @@ class WindowsCOMController:
     
     def send_media_key(self, key):
         try:
-            # Отправка медиа-клавиш через VK коды
-            import ctypes
-            from ctypes import wintypes
-            
-            user32 = ctypes.windll.user32
-            
-            # VK коды для медиа-клавиш
-            VK_MEDIA_PLAY_PAUSE = 0xB3
-            VK_MEDIA_NEXT_TRACK = 0xB0
-            VK_MEDIA_PREV_TRACK = 0xB1
-            
-            key_map = {
-                'play_pause': VK_MEDIA_PLAY_PAUSE,
-                'next_track': VK_MEDIA_NEXT_TRACK,
-                'previous_track': VK_MEDIA_PREV_TRACK
-            }
-            
-            if key in key_map:
-                vk_code = key_map[key]
-                user32.keybd_event(vk_code, 0, 0, 0)
-                user32.keybd_event(vk_code, 0, 2, 0)
+            if IS_WINDOWS:
+                # Отправка медиа-клавиш через VK коды
+                import ctypes
+                from ctypes import wintypes
+                
+                user32 = ctypes.windll.user32
+                
+                # VK коды для медиа-клавиш
+                VK_MEDIA_PLAY_PAUSE = 0xB3
+                VK_MEDIA_NEXT_TRACK = 0xB0
+                VK_MEDIA_PREV_TRACK = 0xB1
+                
+                key_map = {
+                    'play_pause': VK_MEDIA_PLAY_PAUSE,
+                    'next_track': VK_MEDIA_NEXT_TRACK,
+                    'previous_track': VK_MEDIA_PREV_TRACK
+                }
+                
+                if key in key_map:
+                    vk_code = key_map[key]
+                    user32.keybd_event(vk_code, 0, 0, 0)
+                    user32.keybd_event(vk_code, 0, 2, 0)
         except Exception as e:
             print(f"Ошибка отправки медиа-клавиши: {e}")
     
@@ -405,13 +417,12 @@ class DummyController:
     def get_volume(self):
         return 0.5
 
-class EqualizerWidget(Gtk.DrawingArea):
+class EqualizerWidget(QWidget):
     """Анимированный эквалайзер в японском стиле"""
     
     def __init__(self):
         super().__init__()
-        self.set_size_request(200, 60)
-        self.set_draw_func(self.draw_equalizer)
+        self.setFixedSize(200, 60)
         
         # Параметры эквалайзера
         self.bars = 16
@@ -421,15 +432,17 @@ class EqualizerWidget(Gtk.DrawingArea):
         
         # Цвета градиента (деревяно-розовая гамма)
         self.colors = [
-            (0.4, 0.2, 0.1),    # Тёмный древесный
-            (0.6, 0.4, 0.2),    # Нежный коричневый
-            (1.0, 0.6, 0.4),    # Яркий персиково-розовый
-            (1.0, 0.8, 0.7),    # Светло-персиковый
+            QColor(102, 51, 25),     # Тёмный древесный
+            QColor(153, 102, 51),    # Нежный коричневый
+            QColor(255, 153, 102),   # Яркий персиково-розовый
+            QColor(255, 204, 179),   # Светло-персиковый
         ]
         
         # Запуск анимации
         self.is_playing = False
-        GLib.timeout_add(50, self.update_equalizer)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_equalizer)
+        self.timer.start(50)
     
     def set_playing(self, playing):
         """Установить состояние воспроизведения"""
@@ -459,67 +472,56 @@ class EqualizerWidget(Gtk.DrawingArea):
                 if self.bar_heights[i] < 0.1:
                     self.bar_heights[i] = 0.1
         
-        self.queue_draw()
-        return True
+        self.update()
     
-    def draw_equalizer(self, area, cr, width, height, user_data=None):
+    def paintEvent(self, event):
         """Отрисовка эквалайзера"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
         # Фон с градиентом
-        gradient = cairo.LinearGradient(0, 0, 0, height)
-        gradient.add_color_stop_rgba(0, 0.2, 0.1, 0.05, 0.8)
-        gradient.add_color_stop_rgba(1, 0.1, 0.05, 0.02, 0.9)
-        cr.set_source(gradient)
-        cr.paint()
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        gradient.setColorAt(0, QColor(51, 25, 12, 204))  # rgba(51, 25, 12, 0.8)
+        gradient.setColorAt(1, QColor(25, 12, 5, 229))   # rgba(25, 12, 5, 0.9)
+        painter.fillRect(self.rect(), gradient)
         
         # Рисование полосок эквалайзера
-        bar_width = width / self.bars
+        bar_width = self.width() / self.bars
         
         for i in range(self.bars):
             x = i * bar_width
-            bar_height = self.bar_heights[i] * (height - 10)
-            y = height - bar_height - 5
-            
-            # Градиент для каждой полоски
-            bar_gradient = cairo.LinearGradient(x, y + bar_height, x, y)
+            bar_height = self.bar_heights[i] * (self.height() - 10)
+            y = self.height() - bar_height - 5
             
             # Выбор цвета в зависимости от высоты
             color_index = min(int(self.bar_heights[i] * len(self.colors)), len(self.colors) - 1)
-            r, g, b = self.colors[color_index]
+            color = self.colors[color_index]
             
-            bar_gradient.add_color_stop_rgba(0, r * 0.6, g * 0.6, b * 0.6, 0.8)
-            bar_gradient.add_color_stop_rgba(0.5, r, g, b, 0.9)
-            bar_gradient.add_color_stop_rgba(1, r * 1.2, g * 1.2, b * 1.2, 1.0)
-            
-            cr.set_source(bar_gradient)
+            # Градиент для каждой полоски
+            bar_gradient = QLinearGradient(x, y + bar_height, x, y)
+            bar_gradient.setColorAt(0, color.darker(140))
+            bar_gradient.setColorAt(0.5, color)
+            bar_gradient.setColorAt(1, color.lighter(120))
             
             # Рисование полоски с закруглёнными краями
-            cr.new_path()
-            cr.move_to(x + 2, y + 3)
-            cr.line_to(x + bar_width - 4, y + 3)
-            cr.arc(x + bar_width - 4, y + 3, 3, -math.pi/2, 0)
-            cr.line_to(x + bar_width - 1, y + bar_height - 3)
-            cr.arc(x + bar_width - 4, y + bar_height - 3, 3, 0, math.pi/2)
-            cr.line_to(x + 2, y + bar_height)
-            cr.arc(x + 2, y + bar_height - 3, 3, math.pi/2, math.pi)
-            cr.line_to(x - 1, y + 3)
-            cr.arc(x + 2, y + 3, 3, math.pi, 3*math.pi/2)
-            cr.close_path()
-            cr.fill()
+            rect = QRectF(x + 2, y, bar_width - 4, bar_height)
+            painter.setBrush(bar_gradient)
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(rect, 3, 3)
 
-class SpotifyMiniPlayer(Gtk.ApplicationWindow):
+class SpotifyMiniPlayer(QMainWindow):
     """Главное окно мини-плеера"""
     
-    def __init__(self, app):
-        super().__init__(application=app)
+    def __init__(self):
+        super().__init__()
         
         # Настройка окна
-        self.set_title(f"🌸 Spotify Mini - {platform.system()}")
-        self.set_default_size(340, 280)
-        self.set_resizable(False)
+        self.setWindowTitle(f"🌸 Spotify Mini - {platform.system()}")
+        self.setFixedSize(340, 280)
         
         # Всегда поверх других окон
-        self.set_decorated(True)
-        self.set_opacity(0.8)
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         
         # Переменные для управления
         self.current_volume = 0.5
@@ -535,7 +537,9 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
         self.apply_styles()
         
         # Обновление данных
-        GLib.timeout_add(1000, self.update_track_info)
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_track_info)
+        self.update_timer.start(1000)
         
         # Добавление информации о системе в статус
         self.show_system_info()
@@ -543,6 +547,7 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
     def show_system_info(self):
         """Показать информацию о системе в консоли"""
         print(f"🖥️  Система: {platform.system()} {platform.release()}")
+        print(f"🎨 PySide версия: {PYSIDE_VERSION}")
         if IS_LINUX:
             print("🐧 Используется MPRIS для управления")
         elif IS_WINDOWS:
@@ -555,341 +560,261 @@ class SpotifyMiniPlayer(Gtk.ApplicationWindow):
     
     def create_ui(self):
         """Создание пользовательского интерфейса"""
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
         # Главный контейнер
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        main_box.set_margin_top(8)
-        main_box.set_margin_bottom(8)
-        main_box.set_margin_start(8)
-        main_box.set_margin_end(8)
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(8, 8, 8, 8)
         
         # Информация о треке с обложкой
-        track_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        track_layout = QHBoxLayout()
+        track_layout.setSpacing(10)
         
         # Обложка альбома
-        self.album_cover = Gtk.Image()
-        self.album_cover.set_size_request(60, 60)
-        self.album_cover.set_css_classes(["album-cover"])
-        track_box.append(self.album_cover)
+        self.album_cover = QLabel()
+        self.album_cover.setFixedSize(60, 60)
+        self.album_cover.setAlignment(Qt.AlignCenter)
+        self.album_cover.setStyleSheet("border: 3px solid #8b4513; border-radius: 12px; background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5, stop:0 #6b3e2a, stop:1 #4a2c1a);")
+        track_layout.addWidget(self.album_cover)
         
         # Информация о треке
-        track_info_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        track_info_box.set_valign(Gtk.Align.CENTER)
+        track_info_layout = QVBoxLayout()
+        track_info_layout.setSpacing(4)
         
-        self.track_title = Gtk.Label(label="♪ Waiting for music...")
-        self.track_title.set_css_classes(["track-title"])
-        self.track_title.set_halign(Gtk.Align.START)
-        self.track_title.set_ellipsize(3)
-        track_info_box.append(self.track_title)
+        self.track_title = QLabel("♪ Waiting for music...")
+        self.track_title.setObjectName("track_title")
+        track_info_layout.addWidget(self.track_title)
         
-        self.track_artist = Gtk.Label(label="Connect your player ♫")
-        self.track_artist.set_css_classes(["track-artist"])
-        self.track_artist.set_halign(Gtk.Align.START)
-        self.track_artist.set_ellipsize(3)
-        track_info_box.append(self.track_artist)
+        self.track_artist = QLabel("Connect your player ♫")
+        self.track_artist.setObjectName("track_artist")
+        track_info_layout.addWidget(self.track_artist)
         
         # Статус воспроизведения + система
         system_icon = "🐧" if IS_LINUX else "🪟"
-        self.status_label = Gtk.Label(label=f"{system_icon} Ready")
-        self.status_label.set_css_classes(["status-label"])
-        self.status_label.set_halign(Gtk.Align.START)
-        track_info_box.append(self.status_label)
+        self.status_label = QLabel(f"{system_icon} Ready")
+        self.status_label.setObjectName("status_label")
+        track_info_layout.addWidget(self.status_label)
         
-        track_box.append(track_info_box)
-        main_box.append(track_box)
+        track_layout.addLayout(track_info_layout)
+        main_layout.addLayout(track_layout)
         
         # Эквалайзер
         self.equalizer = EqualizerWidget()
-        self.equalizer.set_css_classes(["equalizer"])
-        main_box.append(self.equalizer)
+        self.equalizer.setObjectName("equalizer")
+        main_layout.addWidget(self.equalizer)
         
         # Кнопки управления
-        controls_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        controls_box.set_halign(Gtk.Align.CENTER)
+        controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(12)
         
         # Кнопка "Предыдущий"
-        prev_button = Gtk.Button(label="⏮")
-        prev_button.set_css_classes(["control-button", "nav-button"])
-        prev_button.connect("clicked", self.on_previous_clicked)
-        controls_box.append(prev_button)
+        prev_button = QPushButton("⏮")
+        prev_button.setObjectName("nav_button")
+        prev_button.clicked.connect(self.on_previous_clicked)
+        controls_layout.addWidget(prev_button)
         
         # Кнопка "Воспроизведение/Пауза"
-        self.play_button = Gtk.Button(label="▶")
-        self.play_button.set_css_classes(["control-button", "play-button"])
-        self.play_button.connect("clicked", self.on_play_clicked)
-        controls_box.append(self.play_button)
+        self.play_button = QPushButton("▶")
+        self.play_button.setObjectName("play_button")
+        self.play_button.clicked.connect(self.on_play_clicked)
+        controls_layout.addWidget(self.play_button)
         
         # Кнопка "Следующий"
-        next_button = Gtk.Button(label="⏭")
-        next_button.set_css_classes(["control-button", "nav-button"])
-        next_button.connect("clicked", self.on_next_clicked)
-        controls_box.append(next_button)
+        next_button = QPushButton("⏭")
+        next_button.setObjectName("nav_button")
+        next_button.clicked.connect(self.on_next_clicked)
+        controls_layout.addWidget(next_button)
         
-        main_box.append(controls_box)
+        main_layout.addLayout(controls_layout)
         
         # Регулятор громкости
-        volume_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        volume_box.set_halign(Gtk.Align.CENTER)
+        volume_layout = QHBoxLayout()
+        volume_layout.setSpacing(8)
         
-        volume_label = Gtk.Label(label="🔊")
-        volume_label.set_css_classes(["volume-label"])
-        volume_box.append(volume_label)
+        volume_label = QLabel("🔊")
+        volume_label.setObjectName("volume_label")
+        volume_layout.addWidget(volume_label)
         
-        self.volume_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
-        self.volume_scale.set_range(0.0, 1.0)
-        self.volume_scale.set_value(self.current_volume)
-        self.volume_scale.set_size_request(120, -1)
-        self.volume_scale.set_css_classes(["volume-scale"])
-        self.volume_scale.connect("value-changed", self.on_volume_changed)
-        volume_box.append(self.volume_scale)
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(int(self.current_volume * 100))
+        self.volume_slider.setObjectName("volume_slider")
+        self.volume_slider.valueChanged.connect(self.on_volume_changed)
+        volume_layout.addWidget(self.volume_slider)
         
-        self.volume_percent_label = Gtk.Label(label="50%")
-        self.volume_percent_label.set_css_classes(["volume-percent"])
-        volume_box.append(self.volume_percent_label)
+        self.volume_percent_label = QLabel("50%")
+        self.volume_percent_label.setObjectName("volume_percent")
+        volume_layout.addWidget(self.volume_percent_label)
         
-        main_box.append(volume_box)
+        main_layout.addLayout(volume_layout)
         
         # Регулятор прозрачности
-        opacity_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        opacity_box.set_halign(Gtk.Align.CENTER)
+        opacity_layout = QHBoxLayout()
+        opacity_layout.setSpacing(8)
         
-        opacity_label = Gtk.Label(label="✨")
-        opacity_label.set_css_classes(["opacity-label"])
-        opacity_box.append(opacity_label)
+        opacity_label = QLabel("✨")
+        opacity_label.setObjectName("opacity_label")
+        opacity_layout.addWidget(opacity_label)
         
-        self.opacity_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL)
-        self.opacity_scale.set_range(0.7, 1.0)
-        self.opacity_scale.set_value(self.current_opacity)
-        self.opacity_scale.set_size_request(120, -1)
-        self.opacity_scale.set_css_classes(["opacity-scale"])
-        self.opacity_scale.connect("value-changed", self.on_opacity_changed)
-        opacity_box.append(self.opacity_scale)
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(70, 100)
+        self.opacity_slider.setValue(int(self.current_opacity * 100))
+        self.opacity_slider.setObjectName("opacity_slider")
+        self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
+        opacity_layout.addWidget(self.opacity_slider)
         
-        self.opacity_percent_label = Gtk.Label(label="80%")
-        self.opacity_percent_label.set_css_classes(["opacity-percent"])
-        opacity_box.append(self.opacity_percent_label)
+        self.opacity_percent_label = QLabel("80%")
+        self.opacity_percent_label.setObjectName("opacity_percent")
+        opacity_layout.addWidget(self.opacity_percent_label)
         
-        main_box.append(opacity_box)
+        main_layout.addLayout(opacity_layout)
         
-        self.set_child(main_box)
+        central_widget.setLayout(main_layout)
     
     def apply_styles(self):
-        """Применение CSS стилей"""
-        css = """
-        window {
-            background: radial-gradient(circle at 30% 20%, #4a2c1a 0%, #2d1810 70%);
+        """Применение стилей"""
+        style = """
+        QMainWindow {
+            background: qradialgradient(cx:0.3, cy:0.2, radius:0.7, fx:0.3, fy:0.2, stop:0 #4a2c1a, stop:1 #2d1810);
             border: 3px solid #8b4513;
             border-radius: 20px;
-            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), 
-                        inset 0 2px 8px rgba(255, 153, 153, 0.1);
         }
         
-        .track-title {
+        #track_title {
             color: #ffd4a3;
             font-size: 13px;
             font-weight: bold;
-            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.6);
-            margin: 0;
+            padding: 2px;
         }
         
-        .track-artist {
+        #track_artist {
             color: #d4a574;
             font-size: 11px;
             font-style: italic;
-            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
-            margin: 0;
+            padding: 2px;
         }
         
-        .status-label {
+        #status_label {
             color: #ff9999;
             font-size: 10px;
             font-weight: bold;
-            text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.7);
-            margin: 0;
+            padding: 2px;
         }
         
-        .album-cover {
-            border: 3px solid #8b4513;
-            border-radius: 12px;
-            background: radial-gradient(circle, #6b3e2a, #4a2c1a);
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3),
-                        inset 0 2px 4px rgba(255, 153, 153, 0.2);
-        }
-
-        .equalizer {
+        #equalizer {
             border: 2px solid #8b4513;
             border-radius: 15px;
-            background: linear-gradient(135deg, rgba(45, 24, 16, 0.9), rgba(74, 44, 26, 0.8));
-            margin: 4px 0;
-            box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.4),
-                        0 2px 6px rgba(255, 153, 153, 0.1);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(45, 24, 16, 230), stop:1 rgba(74, 44, 26, 204));
+            margin: 4px 0px;
         }
-
-        .control-button {
-            background: linear-gradient(135deg, #8b4513, #a0522d);
+        
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #8b4513, stop:1 #a0522d);
             color: #ffd4a3;
             border: 2px solid #654321;
             border-radius: 20px;
             padding: 6px 12px;
             font-size: 14px;
             font-weight: bold;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.3),
-                        inset 0 1px 2px rgba(255, 212, 163, 0.2);
+            min-width: 30px;
+            min-height: 30px;
         }
-
-        .control-button:hover {
-            background: linear-gradient(135deg, #a0522d, #cd853f);
-            transform: translateY(-1px) scale(1.05);
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4),
-                        inset 0 2px 4px rgba(255, 212, 163, 0.3);
+        
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #a0522d, stop:1 #cd853f);
         }
-
-        .control-button:active {
-            transform: translateY(0px) scale(0.95);
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4),
-                        inset 0 2px 8px rgba(0, 0, 0, 0.3);
+        
+        QPushButton:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #654321, stop:1 #8b4513);
         }
-
-        .play-button {
-            background: linear-gradient(135deg, #ff6b6b, #ff9999);
+        
+        #play_button {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff6b6b, stop:1 #ff9999);
             color: #2d1810;
             border-color: #ff4757;
-            box-shadow: 0 4px 12px rgba(255, 107, 107, 0.4),
-                        inset 0 2px 4px rgba(255, 255, 255, 0.3);
         }
-
-        .play-button:hover {
-            background: linear-gradient(135deg, #ff9999, #ffb3b3);
-            box-shadow: 0 8px 20px rgba(255, 107, 107, 0.6),
-                        inset 0 2px 6px rgba(255, 255, 255, 0.4);
+        
+        #play_button:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff9999, stop:1 #ffb3b3);
         }
-
-        .nav-button {
-            background: linear-gradient(135deg, #6b3e2a, #8b4513);
+        
+        #nav_button {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #6b3e2a, stop:1 #8b4513);
             padding: 6px 10px;
         }
-
-        .nav-button:hover {
-            background: linear-gradient(135deg, #8b4513, #a0522d);
+        
+        #nav_button:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #4a2c1a, stop:1 #8b4513);
         }
 
-        .volume-scale, .opacity-scale {
-            background: linear-gradient(135deg, #4a2c1a, #6b3e2a);
-            border: 2px solid #8b4513;
-            border-radius: 12px;
-            padding: 2px;
-        }
-
-        .volume-scale slider, .opacity-scale slider {
-            background: linear-gradient(135deg, #ff9999, #ff6b6b);
-            border: 2px solid #ff4757;
-            border-radius: 50%;
-            min-width: 16px;
-            min-height: 16px;
-            box-shadow: 0 2px 6px rgba(255, 107, 107, 0.5);
-        }
-
-        .volume-scale slider:hover, .opacity-scale slider:hover {
-            background: linear-gradient(135deg, #ffb3b3, #ff9999);
-            box-shadow: 0 4px 10px rgba(255, 107, 107, 0.7);
-        }
-
-        .volume-scale trough, .opacity-scale trough {
-            background: linear-gradient(135deg, #2d1810, #4a2c1a);
-            border-radius: 6px;
-            border: 1px solid #654321;
-            min-height: 8px;
-        }
-
-        .volume-label, .opacity-label {
+        #volume_label, #opacity_label {
             color: #ffd4a3;
-            font-size: 14px;
-            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
-        }
-
-        .volume-percent, .opacity-percent {
-            color: #d4a574;
-            font-size: 10px;
+            font-size: 15px;
             font-weight: bold;
-            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
-            min-width: 25px;
+        }
+        #volume_slider, #opacity_slider {
+            min-width: 80px;
+        }
+        #volume_percent, #opacity_percent {
+            color: #ffd4a3;
+            font-size: 11px;
+            font-weight: bold;
         }
         """
-        css_provider = Gtk.CssProvider()
-        css_provider.load_from_data(css.encode())
-        display = Gdk.Display.get_default()
-        Gtk.StyleContext.add_provider_for_display(
-            display, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
-
-    def on_volume_changed(self, scale):
-        self.current_volume = scale.get_value()
-        volume_percent = int(self.current_volume * 100)
-        self.volume_percent_label.set_text(f"{volume_percent}%")
-        self.media_controller.set_volume(self.current_volume)
-
-    def on_opacity_changed(self, scale):
-        self.current_opacity = scale.get_value()
-        opacity_percent = int(self.current_opacity * 100)
-        self.opacity_percent_label.set_text(f"{opacity_percent}%")
-        self.set_opacity(self.current_opacity)
+        self.setStyleSheet(style)
 
     def update_track_info(self):
+        """Обновление информации о текущем треке и UI"""
         info = self.media_controller.get_track_info()
-        self.track_title.set_text(f"♪ {info['title']}")
-        self.track_artist.set_text(f"by {info['artist']}")
-        self.status_label.set_text(f"{'🐧' if IS_LINUX else '🪟'} {info['status']}")
-        self.equalizer.set_playing(info['is_playing'])
-        # Загрузка обложки (если есть URL)
-        if info['album_art']:
-            self.load_album_cover(info['album_art'])
-        return True
+        self.track_title.setText(info.get('title', 'Unknown'))
+        self.track_artist.setText(info.get('artist', 'Unknown'))
+        self.status_label.setText(info.get('status', 'Unknown'))
+        is_playing = info.get('is_playing', False)
+        self.equalizer.set_playing(is_playing)
+        self.play_button.setText("⏸" if is_playing else "▶")
 
-    def load_album_cover(self, url):
-        def load_cover():
+        # Обновление обложки, если есть ссылка
+        cover_url = info.get('album_art')
+        if cover_url:
             try:
-                response = urllib.request.urlopen(url, timeout=5)
-                image_data = response.read()
-                GLib.idle_add(self.set_album_cover, image_data)
-            except Exception as e:
-                print(f"Ошибка загрузки обложки: {e}")
-        threading.Thread(target=load_cover, daemon=True).start()
+                data = urllib.request.urlopen(cover_url).read()
+                pixmap = QPixmap()
+                pixmap.loadFromData(data)
+                self.album_cover.setPixmap(pixmap.scaled(60, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            except Exception:
+                self.album_cover.setPixmap(QPixmap())
+        else:
+            self.album_cover.setPixmap(QPixmap())
 
-    def set_album_cover(self, image_data):
-        try:
-            loader = GdkPixbuf.PixbufLoader()
-            loader.write(image_data)
-            loader.close()
-            pixbuf = loader.get_pixbuf()
-            pixbuf = pixbuf.scale_simple(50, 50, GdkPixbuf.InterpType.BILINEAR)
-            self.album_cover.set_from_pixbuf(pixbuf)
-        except Exception as e:
-            print(f"Ошибка установки обложки: {e}")
-
-    def on_play_clicked(self, button):
-        self.media_controller.play_pause()
-
-    def on_previous_clicked(self, button):
+    def on_previous_clicked(self):
         self.media_controller.previous_track()
+        self.update_track_info()
 
-    def on_next_clicked(self, button):
+    def on_play_clicked(self):
+        self.media_controller.play_pause()
+        self.update_track_info()
+
+    def on_next_clicked(self):
         self.media_controller.next_track()
+        self.update_track_info()
 
-class SpotifyMiniApp(Gtk.Application):
-    """Главный класс приложения"""
-    def __init__(self):
-        super().__init__(application_id="com.example.spotifymini")
-        self.window = None
+    def on_volume_changed(self, value):
+        self.current_volume = value / 100.0
+        self.volume_percent_label.setText(f"{value}%")
+        self.media_controller.set_volume(self.current_volume)
 
-    def do_activate(self):
-        if not self.window:
-            self.window = SpotifyMiniPlayer(self)
-            self.window.present()
+    def on_opacity_changed(self, value):
+        self.current_opacity = value / 100.0
+        self.opacity_percent_label.setText(f"{value}%")
+        self.setWindowOpacity(self.current_opacity)
 
 def main():
-    print("🌸 Запуск Spotify Mini Player...")
-    app = SpotifyMiniApp()
-    app.run()
+    app = QApplication(sys.argv)
+    player = SpotifyMiniPlayer()
+    player.show()
+    sys.exit(app.exec())
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
